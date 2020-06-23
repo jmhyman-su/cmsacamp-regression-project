@@ -1,0 +1,141 @@
+```{r}
+library(tidyverse)
+baseball_data <- read_csv("baseball_batting.csv")
+```
+```{r}
+## Basic EDA Hits vs Walks impact on WAR
+baseball_data %>%
+  ggplot(aes(x = H, y = WAR)) +
+  geom_point()
+
+baseball_data %>%
+  ggplot(aes(x = BB, y = WAR)) +
+  geom_point()
+
+## runs vs rbis
+baseball_data %>%
+  ggplot(aes(x = R, y = WAR)) +
+  geom_point()
+baseball_data %>%
+  ggplot(aes(x = RBI, y = WAR)) +
+  geom_point()
+
+
+```
+
+```{r}
+baseball_data %>%
+  ggplot(aes(x = ISO, y = SO, color = WAR)) +
+  geom_point()
+
+## bottom right cluster are the super stars
+```
+
+```{r}
+
+baseball_data$scaled_so <- scale(baseball_data$SO)
+baseball_data$scaled_iso <- scale(baseball_data$ISO)
+baseball_data$scaled_war <- scale(baseball_data$WAR)
+
+library(protoclust)
+mlb_minimax <- protoclust(dist(
+    dplyr::select(baseball_data,
+                  scaled_so, scaled_iso, scaled_war)))
+mlb_multidim_clust_cut <- protocut(mlb_minimax, k = 3)
+library(GGally)
+baseball_data <- baseball_data %>%
+  mutate(full_minimax_clusters = 
+           as.factor(mlb_multidim_clust_cut$cl))
+ggpairs(baseball_data,
+        columns =
+          c("scaled_so", "scaled_iso", "scaled_war"),
+        aes(color = full_minimax_clusters))
+## cluster ggpairs producing NA graphs
+```
+
+```{r}
+## correlation plots WAR vs WPA_net
+install.packages("ggcorrplot")
+library(ggcorrplot)
+
+baseball_model_data_war <- baseball_data %>%
+  dplyr::select(WAR, H, R, RBI, HR, BB)
+mlb_cor_matrix <- cor(baseball_model_data_war)
+ggcorrplot(mlb_cor_matrix,
+           hc.order = TRUE,
+           type = "lower",
+           lab = TRUE)
+
+baseball_model_data_wpa <- baseball_data %>%
+  dplyr::select(WPA_net, H, R, RBI, HR, BB)
+mlb_cor_matrix <- cor(baseball_model_data_wpa)
+ggcorrplot(mlb_cor_matrix,
+           hc.order = TRUE,
+           type = "lower",
+           lab = TRUE)
+
+round_cor_matrix <- 
+  round(cor(baseball_model_data_war), 2)
+ggcorrplot(round_cor_matrix, 
+           hc.order = TRUE,
+           type = "lower",
+           lab = TRUE)
+
+## WPA seems to have higher correlation with the counting statistics than WAR
+```
+
+```{r}
+## cross validation 
+set.seed(2020)
+baseball_model_data <- baseball_model_data %>%
+  mutate(test_fold = sample(rep(1:5, length.out = n())))
+
+get_cv_preds <- function(model_formula, data = baseball_model_data) {
+  map_dfr(unique(data$test_fold), 
+          function(holdout) {
+            test_data <- data %>%
+              filter(test_fold == holdout)
+            train_data <- data %>%
+              filter(test_fold != holdout)
+            reg_model <- lm(as.formula(model_formula), data = train_data)
+            tibble(test_preds = predict(reg_model, newdata = test_data),
+                   test_actual = test_data$WPA_net,
+                   test_fold = holdout) 
+          })
+}
+## testing similar combinations 
+all_cv_preds <- get_cv_preds("WPA_net ~ HR + RBI + R + BB + H")
+slg_only_cv_preds <- get_cv_preds("WPA_net ~ HR + RBI")
+one_base_only_cv_preds <- get_cv_preds("WPA_net ~ BB + H")
+runs_and_rbis <- get_cv_preds("WPA_net ~ RBI + R")
+
+bind_rows(mutate(all_cv_preds, type = "All"),
+          mutate(slg_only_cv_preds, type = "Slugging Related"),
+          mutate(one_base_only_cv_preds, type = "One Base only"),
+          mutate(runs_and_rbis, type = "Runs and RBis")) %>%
+  group_by(type) %>%
+  summarize(rmse = sqrt(mean((test_actual - test_preds)^2))) %>%
+  mutate(type = fct_reorder(type, rmse)) %>%
+  ggplot(aes(x = type, y = rmse)) +
+  geom_point() + coord_flip() + theme_bw()
+
+all_lm <- lm(WPA_net ~ HR + RBI + R + BB + H, data = baseball_model_data)
+summary(all_lm)
+plot(all_lm)
+## walks and rbis biggest coefficient
+## use theas runs rbis and obp model!!!!!
+library(car)
+vif(all_lm)
+
+```
+
+```{r}
+## showing how much multicollinearity exists in the man-made stats
+bad_lm <- lm(WPA_net ~ SLG + OPS + OBP + ISO + wOBA, data = baseball_data)
+summary(bad_lm)
+vif(bad_lm)
+
+
+
+```
+
